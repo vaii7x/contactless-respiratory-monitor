@@ -1,0 +1,518 @@
+=====================================================================
+PHASEBREATHE — FULL PROJECT CONTEXT FOR WRITING A DETAILED REPORT
+=====================================================================
+
+INSTRUCTIONS FOR CLAUDE
+-----------------------
+You are helping me write a detailed project report for "PhaseBreathe", a
+contactless respiratory-rate monitor I built. Everything you need is in this
+file. Please:
+
+  - Use ONLY the facts in this file. Do not invent test results, accuracy
+    figures, participant data, clinical claims or components I did not use.
+    Where a report section normally needs data I have not collected (e.g.
+    accuracy vs. a reference device), write a clearly marked placeholder
+    like [TO BE FILLED: ...] instead of making numbers up.
+  - Keep the medical disclaimer: this is an experimental prototype, not a
+    medical device, not clinically validated, cannot diagnose anything.
+  - Explain technical ideas so a non-specialist examiner can follow them,
+    but keep the exact parameters (thresholds, window sizes, rates).
+  - Include diagrams as text/ASCII or describe where a figure should go
+    ([FIGURE: ...]) if you cannot draw it.
+
+Suggested report structure (adapt if my institution's format differs):
+  1. Title page / Abstract
+  2. Introduction (problem, motivation, objectives)
+  3. Background / Literature context (respiratory rate, existing methods)
+  4. System overview and block diagram
+  5. Hardware design (components, wiring, voltage divider, sensor physics)
+  6. Firmware design
+  7. Software architecture (backend, API, WebSocket, database, frontend)
+  8. Signal processing algorithms (each one: purpose, method, parameters,
+     why those parameters)
+  9. Dashboard / user interface and features
+ 10. Development process and design decisions / problems solved
+ 11. Testing and results (what was tested, how, what happened)
+ 12. Limitations
+ 13. Future work
+ 14. Conclusion
+ 15. References [TO BE FILLED by me / suggest standard sources]
+ 16. Appendices (API list, database schema, file structure, setup guide)
+
+
+=====================================================================
+1. PROJECT SUMMARY
+=====================================================================
+Name: PhaseBreathe — contactless respiration monitor
+Type: Embedded + software prototype (hardware sensor, Python backend,
+      web dashboard), runs locally on a Windows PC.
+
+One-paragraph description:
+PhaseBreathe measures a person's breathing rate without touching them. An
+HC-SR04 ultrasonic distance sensor, controlled by an ESP32 microcontroller,
+is pointed at the person's chest and measures the distance to it 25 times
+per second. Breathing in moves the chest toward the sensor; breathing out
+moves it away. These millimetre-scale movements form a wave. A Python
+backend filters this wave, detects each breath as a peak, converts the time
+between breaths into breaths per minute, assesses signal quality, and flags
+possible breathing pauses (no chest movement for 10 s or more). A React web
+dashboard shows the live chest-movement graph, the breathing rate and
+classification, a confidence value, alarms, and recorded sessions. Sessions
+are stored in a local SQLite database and can be exported to CSV. Nothing is
+sent to the internet; all data stays on the computer.
+
+Problem / motivation (for the introduction):
+  - Respiratory rate is a key vital sign, but it is often counted manually
+    or measured with contact devices (chest belts, nasal cannulas, wearable
+    sensors) that can be uncomfortable, especially during sleep.
+  - A contactless approach using a cheap ultrasonic sensor could allow
+    low-cost, non-intrusive monitoring and early warning of breathing
+    pauses.
+  - Normal adult resting respiratory rate is about 12–20 breaths/min;
+    rates outside this are clinically interesting (slow = bradypnea,
+    fast = tachypnea). Pauses of 10 s or more are the usual definition
+    length used for apnea events in sleep studies.
+
+Objectives:
+  1. Measure chest-wall distance contactlessly and continuously.
+  2. Extract a breathing rate in real time from a noisy distance signal.
+  3. Detect and alert on possible breathing pauses.
+  4. Present results clearly on a live dashboard.
+  5. Record sessions and allow data export for later analysis.
+  6. Be honest about reliability (signal quality, confidence, disclaimers).
+
+
+=====================================================================
+2. EVERYTHING USED (BILL OF MATERIALS + TECHNOLOGY STACK)
+=====================================================================
+Hardware
+  - ESP32 Dev Module (microcontroller, USB serial to PC)
+  - HC-SR04 ultrasonic distance sensor (40 kHz ultrasonic transducer,
+    5 V module, TRIG input / ECHO output)
+  - 2 x 10 kOhm resistors (voltage divider on ECHO line)
+  - Jumper wires / breadboard, USB cable
+
+Wiring
+  - HC-SR04 VCC  -> ESP32 VIN/5V (when VIN supplies 5 V)
+  - HC-SR04 TRIG -> ESP32 GPIO 5
+  - HC-SR04 ECHO -> 10 kOhm -> junction -> ESP32 GPIO 18
+                    junction -> 10 kOhm -> GND
+  - HC-SR04 GND  -> ESP32 GND
+  - Reason for the divider: the HC-SR04 ECHO pin outputs 5 V, but ESP32
+    GPIOs are 3.3 V devices; 5 V directly could damage the ESP32.
+  - Note for the report (design review point): an equal 10k/10k divider
+    gives 5 V x 10/(10+10) = 2.5 V. The ESP32's guaranteed logic-high
+    threshold is about 0.75 x 3.3 V = 2.475 V, so 2.5 V is only just above
+    it. A 10k (top) / 20k (bottom) divider would give about 3.3 V and a
+    more reliable margin. This can be listed as an improvement.
+
+Firmware
+  - Language: Arduino C++ for ESP32
+  - Tool: Arduino IDE with ESP32 board support
+  - File: firmware/phasebreathe_esp32.ino
+
+Backend
+  - Python 3.11
+  - FastAPI 0.162 (web framework, REST API + WebSocket)
+  - Uvicorn 0.54 (ASGI server), with websockets 17.3
+  - Pydantic 2 (request validation)
+  - pyserial 3.5 (USB serial communication with the ESP32)
+  - SQLite (built into Python, via sqlite3) for storage
+  - Python standard library: threading, statistics (median), collections
+    (deque ring buffers), csv, re, asyncio
+  - File: backend/main.py; dependencies in backend/requirements.txt
+
+Frontend
+  - React 18.3 (UI), react-dom
+  - Vite 6.4 (dev server and build tool), @vitejs/plugin-react
+  - HTML5 Canvas (live graph, hand-drawn for performance)
+  - Web Audio API (alarm beep)
+  - WebSocket API (live data from the backend)
+  - Plain CSS with CSS custom properties; IBM Plex Mono for numbers
+  - Files: frontend/src/main.jsx, frontend/src/style.css,
+    frontend/index.html, frontend/vite.config.js
+  - Note: recharts and lucide-react are listed in package.json but are not
+    used by the current code (the graph is drawn directly on a canvas).
+
+Platform / tooling
+  - Windows 10/11
+  - Node.js (v24 used) and npm
+  - Windows batch scripts: setup.bat (creates Python virtual environment,
+    installs Python and npm packages), start_backend.bat (runs the API on
+    127.0.0.1:8000), start_dashboard.bat (runs the dashboard, usually
+    http://localhost:5173)
+  - Claude Code (AI coding assistant) was used during development for
+    debugging, the responsiveness fix and adding features.
+
+
+=====================================================================
+3. SYSTEM ARCHITECTURE
+=====================================================================
+Data flow:
+
+  [Chest] ~~ultrasound~~ [HC-SR04] --TRIG/ECHO--> [ESP32]
+       --USB serial 115200 baud, text lines--> [Python backend]
+       --WebSocket JSON, ~10 updates/s--> [React dashboard in browser]
+  [Python backend] --SQLite--> phasebreathe.db --HTTP--> CSV download
+
+Backend internal structure:
+  - A background "reader" thread reads serial lines continuously, parses
+    each distance, and runs the full processing pipeline on every sample.
+  - Shared state (current rate, quality, status, counters) is protected by
+    a lock because the reader thread and web requests run concurrently.
+  - A 30-second ring buffer (750 samples) of processed samples is kept for
+    the live graph.
+  - The WebSocket endpoint sends the current state plus only the new
+    samples the browser has not yet seen, every 100 ms. An "epoch" counter
+    tells the browser to clear its graph after a reconnect.
+  - Recorded readings are written to SQLite in batches of 25 (one commit
+    per sample was found to block the serial reader).
+
+Serial protocol (ESP32 -> PC):
+  "PHASEBREATHE_READY"  sent once at start-up
+  "DIST,19.45"          one valid distance reading in cm
+  "INVALID"             no echo, or distance out of range
+  The backend also accepts an older format "Distance: 19.45 cm | ..." for
+  backward compatibility with earlier firmware.
+
+
+=====================================================================
+4. FIRMWARE DETAILS
+=====================================================================
+  - Serial: 115200 baud.
+  - Each cycle: TRIG LOW 3 us, HIGH 10 us, LOW (standard HC-SR04 trigger).
+  - pulseIn() measures the ECHO pulse width with a 15,000 us timeout
+    (a 250 cm round trip takes about 14.6 ms, so this covers the full
+    usable range and stops the loop from hanging when there is no echo).
+  - Distance (cm) = echo time (us) x 0.0343 cm/us / 2
+    (0.0343 cm/us = speed of sound ~343 m/s at ~20 °C; divide by 2 because
+    the sound travels to the chest and back).
+  - Readings outside 2–250 cm are sent as "INVALID".
+  - Fixed sampling period of 40 ms = 25 Hz. The time spent measuring is
+    subtracted from the wait, so the rate stays at 25 Hz regardless of
+    distance. (Earlier versions used a fixed delay after each measurement,
+    which made the rate drift; firmware was previously around 8 Hz.)
+  - The period can be raised toward 60 ms if ghost echoes from far walls
+    appear (sound from the previous ping still bouncing around).
+  - Sampling theory: breathing is at most ~0.67 Hz (40 br/min); 25 Hz is
+    far above the Nyquist requirement and gives enough samples for
+    filtering.
+
+
+=====================================================================
+5. SIGNAL PROCESSING ALGORITHMS (FULL DETAIL)
+=====================================================================
+All run in backend/main.py, function process_distance(), once per sample.
+
+1. Ultrasonic ranging (ESP32) — see section 4.
+
+2. Range validation
+   - Rejects readings outside 2–250 cm (HC-SR04 minimum range is ~2 cm;
+     250 cm matches the firmware timeout).
+
+3. Median filter — window of 5 samples (0.2 s)
+   - Output = middle value of the last 5 readings.
+   - Purpose: removes isolated spikes and ghost echoes (a single wrong
+     reading never reaches the output) while preserving the shape of the
+     slow breathing wave. Median filters are robust to outliers, unlike
+     plain averages.
+
+4. Exponential moving average (EMA), alpha = 0.2
+   - smooth = 0.2 x median + 0.8 x previous smooth
+   - Purpose: smooths remaining sensor noise (HC-SR04 jitter is a few mm).
+   - At 25 Hz, time constant tau ≈ 0.04 s x (1 − 0.2)/0.2 ≈ 0.16–0.2 s,
+     i.e. a low-pass filter with a cutoff of roughly 1 Hz — above the
+     fastest breathing (0.67 Hz) but below most noise.
+   - Design history: alpha was 0.1 originally. That smoothed too heavily:
+     fast, shallow breaths were reduced in size by roughly half, falling
+     below the peak-detection threshold, so they were not counted. Raised
+     to 0.2 as part of the responsiveness fix.
+
+5. Hysteresis peak detection (breath detection)
+   - Tracks the current extreme (highest point while rising, lowest while
+     falling).
+   - A peak is confirmed only when the signal has fallen back at least the
+     threshold below the highest point; a trough is confirmed when it rises
+     the threshold above the lowest point. The detector then switches
+     direction.
+   - Threshold: 0.25 cm by default, or the personal calibrated value
+     (algorithm 12).
+   - Purpose: noise and small wobbles smaller than the threshold can never
+     create a false breath. Works independently of sample rate.
+   - The peak's exact time and value are recorded and sent to the
+     dashboard so it can draw a marker on the graph.
+
+6. Breath-cycle validation
+   - Time between two consecutive peaks = one breathing cycle.
+   - Accepted only if 1.5–10 s, i.e. 6–40 breaths per minute.
+   - Design history: the lower limit was originally 2.5 s (max 24 br/min).
+     During a demo, fast breathing was not shown — the display stayed
+     "stuck" on the previous rate — because every fast cycle (< 2.5 s) was
+     silently discarded. Lowered to 1.5 s to cover rapid breathing.
+
+7. Rate calculation and averaging
+   - Rate per cycle = 60 / cycle duration (breaths per minute).
+   - Displayed rate = mean of the last 3 accepted cycles.
+   - Design history: was the last 5 cycles. At slow breathing (5 s per
+     breath) that meant ~25 s before a change showed fully. Reduced to 3
+     for faster response, trading off a little stability.
+
+8. Rate confidence (spread)
+   - ± value = (highest − lowest of the last 3 cycle rates) / 2.
+   - Shown next to the rate; highlighted in red when greater than ±3
+     br/min, meaning the breaths disagree and the number is less reliable.
+
+9. Breathing classification
+   - < 12 br/min = "slow", 12–20 = "normal", > 20 = "fast" (typical adult
+     resting range). Display label only, not a diagnosis.
+
+10. Signal quality classification
+   - Range of the smoothed distance over the last 5 s (125 samples):
+     < 0.25 cm "low motion", < 1 cm "fair", otherwise "variable".
+
+11. Stillness tracking
+   - Records the last time the smoothed distance moved at least 0.15 cm
+     from the last "moved-to" point (not from the previous sample, so slow
+     drift is still detected at any sample rate).
+   - More than 5 s still: status "Little distance variation — check sensor
+     positioning".
+
+12. Apnea (breathing pause) detection
+   - Triggered when there has been no movement (per algorithm 11) for 10 s
+     or more AND at least one breath was previously detected (so an empty
+     room or a just-connected sensor does not raise an alarm).
+   - Counts each new pause as one event; clears the previous rate so a
+     stale number is not displayed during a pause.
+   - Status: "Possible apnea event — no chest movement for N s. Check on
+     the person; this prototype cannot diagnose sleep apnea".
+
+13. Echo reliability check
+   - Tracks the share of valid readings over the last 125 readings (~5 s).
+   - After at least 25 readings, if below 70% valid: quality "poor" and the
+     message "aim the sensor squarely at the chest and check the ECHO
+     wiring". Also counts total no-echo readings.
+
+14. Personal calibration
+   - Triggered by the Calibrate button; collects 10 s of smoothed distance
+     while the person breathes normally.
+   - Breath depth = max − min over those 10 s.
+   - New threshold = 40% of breath depth, clamped to 0.1–1.0 cm.
+   - Purpose: a fixed 0.25 cm threshold can miss shallow breathers or
+     people far from the sensor, and can over-count noisy deep breathers.
+     Calibration adapts detection to the individual.
+   - Resets to 0.25 cm on reconnect.
+
+(Note: code comments label the median filter, EMA and peak detector as
+"Algorithm 1, 2, 3"; the rest are rule-based processing steps.)
+
+
+=====================================================================
+6. DASHBOARD FEATURES (USER INTERFACE)
+=====================================================================
+Header / connection
+  - Serial port dropdown (refreshed every 3 s), Connect / Disconnect.
+  - Green/grey LED shows whether the device is connected.
+  - Calibrate button (visible when connected) with live countdown
+    "Calibrating… N s".
+  - Banner if the backend is unreachable; the page reconnects to the
+    backend automatically every second.
+
+Readout cards
+  - Respiratory rate (br/min) with label "slow / normal / fast (adult
+    12–20)" and confidence "±X"; red when unreliable.
+  - Distance (cm, smoothed) plus the breath threshold currently in use.
+  - Signal quality, plus number of breathing pauses this connection.
+  - Measured sample rate (Hz) calculated in the browser from the last 2 s
+    of samples, with % valid readings and number of no-echo readings.
+
+Live graph
+  - 30-second scrolling chest-distance graph on an HTML canvas, auto-scaled
+    vertically, with time gridlines (−25 s … −5 s) and cm labels.
+  - Dots mark every breath peak the algorithm counted, so the viewer can
+    verify detection visually.
+  - High-DPI aware; redraws on window resize.
+  - Status line under the graph with plain-language status messages.
+
+Apnea alarm
+  - Red banner: "No chest movement for N s — possible apnea event", with
+    advice and disclaimer.
+  - Banner flashes; respects the operating system "reduce motion"
+    accessibility setting (no flashing then).
+  - Audible 880 Hz beep every second during the pause (Web Audio API;
+    enabled after the first click because browsers block sound before user
+    interaction).
+
+Recording and history
+  - Start / Stop session buttons; while recording, every processed reading
+    (time, distance, rate, status) is stored.
+  - Recent sessions table (last 20): session #, start and end time, sample
+    count, average rate with min–max, number of breathing pauses, % valid
+    readings.
+  - Export CSV link: downloads all readings (session_id, timestamp,
+    distance_cm, estimated_rate_bpm, status).
+
+Design
+  - Clean "instrument panel" style, light paper-coloured theme, monospace
+    numbers, responsive layout for laptop, tablet and phone widths,
+    keyboard focus outlines, ARIA labels and role="alert" on the apnea
+    banner.
+  - Footer disclaimer: "Experimental prototype. Not validated for medical
+    use — low movement does not mean breathing has stopped. Data stays on
+    this computer."
+
+
+=====================================================================
+7. BACKEND API (APPENDIX MATERIAL)
+=====================================================================
+Base URL: http://127.0.0.1:8000 (local only; CORS allows the dashboard
+at localhost:5173)
+
+  GET  /api/health        -> {"ok": true}
+  GET  /api/ports         -> list of available serial ports
+  GET  /api/state         -> current state + 30 s history
+  POST /api/connect       -> body {"port": "COM9", "baudrate": 115200};
+                             opens the port, resets processing, starts the
+                             reader thread
+  POST /api/disconnect    -> closes the port
+  POST /api/calibrate     -> starts 10 s personal calibration (error if not
+                             connected)
+  POST /api/session/start -> creates a session and starts recording
+  POST /api/session/stop  -> stops recording, stores the session summary
+  GET  /api/sessions      -> last 20 sessions with summary statistics
+  GET  /api/export.csv    -> all recorded readings as CSV
+  WS   /ws                -> live stream: {"state": {...}, "new": [new
+                             samples], "reset": bool} every 100 ms
+
+State fields sent to the dashboard: connected, port, distance_cm,
+rate_bpm, rate_spread, quality, status, samples, epoch, recording, invalid,
+valid_pct, apnea_s, apnea_events, threshold_cm, calibrating.
+
+Each live sample: n (sample number), timestamp, distance_cm, rate_bpm,
+peak ([time, value] if a breath peak was confirmed on this sample).
+
+
+=====================================================================
+8. DATABASE SCHEMA (SQLite, backend/phasebreathe.db)
+=====================================================================
+  sessions(id INTEGER PK, started TEXT, ended TEXT, samples INTEGER,
+           apnea_events INTEGER, valid_pct INTEGER)
+  readings(id INTEGER PK, session_id INTEGER, timestamp REAL (Unix time),
+           distance REAL (cm), rate REAL (br/min), status TEXT)
+  Index on readings(session_id) for fast per-session statistics.
+  Average/min/max rate per session are computed with SQL (AVG/MIN/MAX).
+  Older databases are upgraded automatically (missing columns are added
+  at start-up).
+
+
+=====================================================================
+9. FILE STRUCTURE
+=====================================================================
+  PhaseBreathe_Final_Windows/
+    README.md                     setup, wiring, troubleshooting
+    PROJECT_OVERVIEW.txt          short project and features overview
+    REPORT_CONTEXT_FOR_CLAUDE.txt this file
+    setup.bat / start_backend.bat / start_dashboard.bat
+    firmware/phasebreathe_esp32.ino
+    backend/main.py, requirements.txt, phasebreathe.db
+    frontend/index.html, package.json, vite.config.js,
+             src/main.jsx, src/style.css
+
+
+=====================================================================
+10. DEVELOPMENT PROCESS, PROBLEMS AND DESIGN DECISIONS
+=====================================================================
+  - Sample rate raised from ~8 Hz to 25 Hz with a fixed-period loop, for a
+    smoother wave and more reliable peak detection; filter constants were
+    retuned for the new rate.
+  - Database writes batched (25 per commit) because committing every
+    sample blocked the serial reader and caused lost samples.
+  - Serial-port scanning moved off the live data path because it is slow on
+    Windows.
+  - WebSocket sends only new samples (incremental), instead of the whole
+    history every time, to keep the dashboard light.
+  - Backward-compatible parsing of the older "Distance: x cm" serial
+    format.
+  - Valid-reading percentage and wiring/aim warnings added after "zero
+    samples"/no-echo problems during testing.
+  - Apnea alarm only after breathing has been seen, to avoid false alarms
+    at start-up.
+  - Responsiveness problem (found during a live demo): when the user
+    switched to faster breathing, the displayed rate stayed at the old
+    value. Root causes found:
+      (a) cycles shorter than 2.5 s (> 24 br/min) were rejected entirely;
+      (b) the rate was averaged over 5 breaths;
+      (c) heavy smoothing (EMA alpha 0.1) shrank fast breaths below the
+          detection threshold.
+    Fix: accept 1.5–10 s cycles, average 3 breaths, alpha 0.2.
+  - Added features afterwards: breathing classification, confidence (±),
+    audible/flashing apnea alarm, session summary statistics, breath peak
+    markers on the graph, personal calibration.
+  - Troubleshooting knowledge (from README): "Access denied" on the COM
+    port means the Arduino Serial Monitor/Plotter is still open; "zero
+    samples" means wrong firmware or the monitor is open; missing COM port
+    means replug the ESP32.
+
+
+=====================================================================
+11. TESTING DONE (ONLY WHAT WAS ACTUALLY DONE)
+=====================================================================
+  - Software simulation of the processing pipeline (synthetic sine-wave
+    "breathing" fed into process_distance with simulated time at 25 Hz):
+      * Breathing switched from 12 to 36 br/min at t = 15 s. After the fix
+        the displayed rate went 12.0 -> 12.8 -> 20.7 -> 28.9 -> 36.0,
+        reaching the new rate about 7 s after the change (~3 fast breaths).
+        Before the fix, 36 br/min could never be displayed (cycles under
+        2.5 s were rejected).
+      * Shallow breathing (0.6 cm peak-to-peak) at 15 br/min with
+        calibration: threshold calibrated to 0.23 cm, rate measured
+        15.0 br/min, spread ±0.0, peaks detected and marked; session
+        summary stored correctly (average/min/max 15.0, 0 pauses,
+        valid % computed).
+  - Frontend production build compiled successfully.
+  - Live demonstration with the real sensor and a person breathing at
+    different speeds (the demo where the lag problem was noticed).
+  - NOT yet done (use placeholders in the report):
+      [TO BE FILLED: comparison of measured rate against manual counting or
+       a reference device, number of participants, error statistics]
+      [TO BE FILLED: effect of distance/angle/clothing on accuracy]
+      [TO BE FILLED: real-sensor test of the new calibration and alarm]
+
+
+=====================================================================
+12. LIMITATIONS
+=====================================================================
+  - Not clinically validated; rate is a "candidate estimate".
+  - Any body movement, talking, coughing or sensor movement can create
+    false breaths or hide real ones.
+  - Ultrasound reflects poorly from angled surfaces, loose or soft
+    clothing and blankets; the sensor must face the chest squarely.
+  - Only 6–40 br/min can be measured; very shallow breathing below the
+    threshold is missed.
+  - Calibration assumes the person breathes normally for 10 s; moving
+    during calibration sets the threshold too high.
+  - Lack of movement does not prove breathing stopped (e.g. shallow
+    abdominal breathing), and movement does not prove breathing.
+  - Speed of sound is fixed at ~343 m/s (20 °C); temperature changes shift
+    absolute distance slightly (breath detection is mostly unaffected
+    because it uses changes in distance).
+  - Session pause count and valid % undercount if the sensor is
+    reconnected in the middle of a recording.
+  - Single person, single sensor, Windows/local only, no user accounts.
+  - Voltage divider gives only ~2.5 V on the ESP32 input (marginal logic
+    level); see section 2.
+
+
+=====================================================================
+13. POSSIBLE FUTURE WORK
+=====================================================================
+  - Validation study against a reference (manual count, chest belt or
+    capnography) with error metrics (mean absolute error, Bland–Altman).
+  - Frequency-domain rate estimate (FFT / autocorrelation) as a
+    cross-check against peak counting.
+  - Motion-artefact detection to pause estimation during body movement.
+  - Temperature compensation for the speed of sound.
+  - mmWave radar or multiple ultrasonic sensors for better robustness.
+  - Wireless operation (ESP32 Wi-Fi/Bluetooth) and battery power.
+  - Mobile notifications for apnea alerts; long-term sleep reports.
+  - Improve the voltage divider (10k/20k) for a reliable 3.3 V logic level.
+  - Remove unused frontend dependencies (recharts, lucide-react).

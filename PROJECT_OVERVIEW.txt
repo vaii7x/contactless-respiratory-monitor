@@ -1,0 +1,181 @@
+PHASEBREATHE — PROJECT OVERVIEW
+===============================
+
+WHAT THIS PROJECT DOES
+----------------------
+PhaseBreathe is a contactless breathing monitor. It measures how fast a person
+is breathing without touching them.
+
+An ultrasonic distance sensor (HC-SR04) is pointed at a person's chest. Every
+time they breathe in, the chest moves slightly toward the sensor; every time
+they breathe out, it moves away. These movements are only a few millimetres,
+but the sensor measures the distance 25 times per second, so the rise and fall
+of the chest shows up as a wave.
+
+The software cleans up that wave, counts each breath, and turns it into a
+respiratory rate (breaths per minute). It also warns when the chest stops
+moving for 10 seconds or more (a possible breathing pause / apnea event).
+
+Everything is shown live on a web dashboard on the same computer, and sessions
+can be recorded to a local database and exported as a CSV file.
+
+IMPORTANT: This is an experimental student prototype. It is NOT a medical
+device, has not been clinically validated, and cannot diagnose sleep apnea or
+any other condition. Low movement does not necessarily mean breathing stopped.
+
+
+HOW IT WORKS (THE PIPELINE)
+---------------------------
+  [HC-SR04 sensor] -> [ESP32] --USB serial--> [Python backend] --WebSocket--> [Web dashboard]
+                                                      |
+                                                 [SQLite DB] -> CSV export
+
+1. Hardware: The ESP32 fires the ultrasonic sensor 25 times a second and sends
+   each distance over USB as a line like "DIST,19.45" (or "INVALID" if there
+   was no echo).
+2. Backend (Python / FastAPI): reads the serial port, filters the signal,
+   detects breaths, calculates the rate, checks signal quality and apnea, and
+   saves recorded sessions.
+3. Frontend (React dashboard): shows the live chest-movement graph, the
+   breathing rate, warnings, and past sessions.
+
+
+SYSTEM COMPONENTS
+-----------------
+Hardware
+  - ESP32 Dev Module
+  - HC-SR04 ultrasonic distance sensor
+  - Voltage divider (two 10 kOhm resistors) on the ECHO pin, because the
+    sensor outputs 5 V and the ESP32 only tolerates 3.3 V
+  - Wiring: VCC -> 5V/VIN, TRIG -> GPIO 5, ECHO -> divider -> GPIO 18, GND -> GND
+
+Software
+  - firmware/phasebreathe_esp32.ino   ESP32 code (measurement at 25 Hz)
+  - backend/main.py                   Python FastAPI server (all signal processing)
+  - frontend/src/main.jsx             React dashboard
+  - backend/phasebreathe.db           SQLite database of recorded sessions
+  - setup.bat / start_backend.bat / start_dashboard.bat   Windows launchers
+
+
+SIGNAL PROCESSING ALGORITHMS
+----------------------------
+In the order every reading passes through them:
+
+ 1. Ultrasonic ranging (on the ESP32)
+    Distance = echo time x speed of sound (0.0343 cm/us) / 2.
+    Fixed 40 ms sample period = 25 readings per second.
+
+ 2. Range validation
+    Readings outside 2–250 cm are rejected as invalid.
+
+ 3. Median filter (5 samples)
+    Takes the middle value of the last 5 readings. Removes single-sample
+    spikes and ghost echoes.
+
+ 4. Exponential moving average (alpha = 0.2)
+    smooth = 0.2 x new + 0.8 x previous. Smooths the wave while keeping
+    lag to about 0.2 s, so fast breathing is still visible.
+
+ 5. Hysteresis peak detection
+    Tracks the highest/lowest point of the wave. A peak only counts once the
+    signal turns back by at least the breath threshold (0.25 cm by default,
+    or the calibrated value). This ignores small wobbles and noise.
+
+ 6. Breath cycle validation
+    The time between two peaks is one breath. Only cycles of 1.5–10 seconds
+    are accepted (6–40 breaths per minute); anything else is treated as noise.
+
+ 7. Rate averaging
+    Rate = 60 / cycle time, averaged over the last 3 breaths so the display
+    responds quickly when breathing speed changes.
+
+ 8. Signal quality classification
+    Based on how much the chest moved over the last 5 seconds:
+    under 0.25 cm = "low motion", under 1 cm = "fair", otherwise "variable".
+
+ 9. Stillness tracking
+    Records the last time the chest moved by at least 0.15 cm.
+
+10. Apnea (breathing pause) detection
+    No chest movement for 10 seconds or more, after breathing was already
+    seen, is flagged as a possible apnea event. The old rate is cleared so a
+    stale number is not shown.
+
+11. Echo reliability check
+    Tracks the percentage of valid readings over the last ~5 seconds. Below
+    70% it warns to re-aim the sensor or check the ECHO wiring.
+
+12. Personal calibration
+    During 10 seconds of normal breathing, measures the person's breath depth
+    and sets the breath threshold to 40% of it (limited to 0.1–1.0 cm), so
+    both shallow and deep breathers are detected correctly.
+
+
+DASHBOARD FEATURES
+------------------
+Connection
+  - Lists available COM ports and connects/disconnects the ESP32
+  - Shows a connected/disconnected indicator
+  - Reconnects to the backend automatically if it restarts
+
+Live readouts
+  - Respiratory rate in breaths per minute
+  - Breathing label: "slow" (< 12), "normal" (12–20), "fast" (> 20),
+    based on the typical adult range
+  - Confidence: "±X" shows how much the last 3 breaths disagree; turns red
+    when greater than ±3 (the number is less reliable)
+  - Smoothed chest distance in cm, plus the breath threshold currently used
+  - Signal quality and number of breathing pauses this connection
+  - Actual sample rate (Hz), % valid readings and number of no-echo readings
+
+Live graph
+  - Last 30 seconds of chest movement, updating about 10 times a second
+  - A dot marks every breath peak the algorithm counted, so you can see that
+    the detected breaths match the real wave
+
+Calibration
+  - "Calibrate" button: breathe normally for 10 s and the breath detection
+    is tuned to that person (countdown shown on the button)
+
+Apnea alarm
+  - Flashing red banner when no chest movement is detected for 10+ seconds
+  - Audible beep every second during the pause
+  - (Respects the "reduce motion" accessibility setting for the flashing)
+
+Recording and history
+  - Start/stop recording sessions; every reading is saved to SQLite
+  - Recent sessions table with: start/end time, number of samples,
+    average rate with min–max range, number of breathing pauses,
+    and % valid readings (session summary)
+  - Export all recorded data as a CSV file
+
+Status and guidance
+  - Plain-language status line (e.g. "Collecting candidate cycles",
+    "Check sensor positioning", serial errors)
+  - Warnings for poor sensor aim, wiring problems and an unreachable backend
+
+
+HOW TO RUN
+----------
+1. Upload firmware/phasebreathe_esp32.ino to the ESP32 with the Arduino IDE.
+2. Close the Arduino Serial Monitor/Plotter (they block the COM port).
+3. Run setup.bat once.
+4. Run start_backend.bat and keep it open.
+5. Run start_dashboard.bat and open http://localhost:5173.
+6. Pick the ESP32's COM port, click Connect, then click Calibrate while the
+   person breathes normally for 10 seconds.
+7. Optionally click "Start session" to record.
+
+
+KNOWN LIMITATIONS
+-----------------
+  - Not clinically validated; the rate is a "candidate estimate" only.
+  - Body movement, talking or a moving sensor will produce false breaths.
+  - The person must breathe normally during calibration, or the threshold
+    will be set too high and breaths will be missed.
+  - Reconnecting the sensor in the middle of a recording makes that session's
+    pause count and valid % too low.
+  - Very shallow breathing, or breathing faster than 40 / slower than 6
+    breaths per minute, is not measured.
+  - The sensor must be aimed straight at the chest; angled surfaces and
+    loose clothing weaken the echo.

@@ -1,0 +1,7 @@
+.venv/
+node_modules/
+frontend/dist/
+__pycache__/
+# recorded sessions are personal health data
+*.db
+graphify-out/
